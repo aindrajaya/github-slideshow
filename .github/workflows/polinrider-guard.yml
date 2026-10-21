@@ -1,0 +1,54 @@
+# Menolak kode yang memuat indikator malware PolinRider / BeaverTail.
+# Dipasang bersama ruleset "polinrider-guard" di branch default:
+# commit hanya bisa masuk ke main kalau cek ini sudah hijau.
+# Tanpa checkout dan tanpa action pihak ketiga: commit diambil sebagai objek git lalu dipindai.
+name: polinrider-guard
+
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: '23 18 * * 0'   # mingguan, Senin 01:23 WIB: sapu semua branch
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: polinrider-guard-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  scan:
+    name: polinrider-guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Ambil commit
+        env:
+          TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          G="$RUNNER_TEMP/r.git"
+          git init -q --bare "$G"
+          git -C "$G" config http.https://github.com/.extraheader \
+            "AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)"
+          git -C "$G" remote add origin "https://github.com/$REPO"
+          git -C "$G" fetch -q --depth=1 --no-tags origin "+$SHA:refs/scan/target"
+          if [ "$EVENT" = schedule ] || [ "$EVENT" = workflow_dispatch ]; then
+            git -C "$G" fetch -q --depth=1 --no-tags origin '+refs/heads/*:refs/remotes/origin/*'
+          fi
+          git -C "$G" show refs/scan/target:.github/scripts/polinrider_guard.py > "$RUNNER_TEMP/guard.py"
+
+      - name: Pindai
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT" = schedule ] || [ "$EVENT" = workflow_dispatch ]; then
+            python3 -I "$RUNNER_TEMP/guard.py" --repo "$RUNNER_TEMP/r.git" --all-branches
+          else
+            python3 -I "$RUNNER_TEMP/guard.py" --repo "$RUNNER_TEMP/r.git" refs/scan/target
+          fi
